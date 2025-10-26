@@ -1,0 +1,314 @@
+"""
+jarvis.py
+A simple voice assistant prototype (speech -> intent -> action -> speak).
+
+Features:
+- Speech recognition (with text fallback)
+- Text-to-speech (pyttsx3)
+- Wikipedia summary
+- Open websites / search
+- Play YouTube videos
+- Tell current time & date
+- Open local applications (example placeholders)
+- Simple send-email function (requires credentials; commented by default)
+- Robust error handling and easy to extend
+"""
+
+import speech_recognition as sr
+import pyttsx3
+import datetime
+import wikipedia
+import webbrowser
+import os
+import subprocess
+import time
+import sys
+# Optional utilities (install as needed)
+# pip install pywhatkit
+import pywhatkit
+
+# ---------------------------
+# CONFIG / SETUP
+# ---------------------------
+VOICE_RATE = 160
+VOICE_VOLUME = 1.0
+WIKI_SENTENCES = 2
+
+# Map simple app names to paths/commands on your OS
+# Update these paths to match your machine if you want "open app" to work.
+APP_MAP = {
+    "notepad": "notepad" if sys.platform == "win32" else "gedit",
+    "chrome": r"C:\Program Files\Google\Chrome\Application\chrome.exe" if sys.platform == "win32" else "google-chrome",
+    # add more apps here
+}
+
+# ---------------------------
+# Text-to-Speech
+# ---------------------------
+engine = pyttsx3.init()
+engine.setProperty("rate", VOICE_RATE)
+engine.setProperty("volume", VOICE_VOLUME)
+# Choose a voice (optional)
+voices = engine.getProperty("voices")
+if voices:
+    engine.setProperty("voice", voices[0].id)  # change index if you want a different voice
+
+
+def speak(text: str):
+    """Speak text and also print it for debug."""
+    print("Jarvis:", text)
+    engine.say(text)
+    engine.runAndWait()
+
+
+# ---------------------------
+# Speech Recognition
+# ---------------------------
+recognizer = sr.Recognizer()
+
+
+def listen(timeout=5, phrase_time_limit=8) -> str:
+    """
+    Listen from microphone and return recognized text.
+    If microphone not available or recognition fails, fall back to text input.
+    """
+    try:
+        with sr.Microphone() as source:
+            recognizer.adjust_for_ambient_noise(source, duration=0.7)
+            speak("Listening...")
+            audio = recognizer.listen(source, timeout=timeout, phrase_time_limit=phrase_time_limit)
+        try:
+            query = recognizer.recognize_google(audio, language="en-IN")
+            print("User (voice):", query)
+            return query.lower()
+        except sr.UnknownValueError:
+            speak("Sorry, I didn't catch that. Please type your command.")
+        except sr.RequestError:
+            speak("Speech service unavailable. Please type your command.")
+    except (sr.RequestError, OSError):
+        # Microphone not found or other OS-level error
+        speak("Microphone not found or unavailable. Please type your command.")
+    # fallback to typed input:
+    try:
+        return input("You (type): ").strip().lower()
+    except KeyboardInterrupt:
+        return "exit"
+
+
+# ---------------------------
+# Small utilities
+# ---------------------------
+def tell_time():
+    now = datetime.datetime.now()
+    return now.strftime("%I:%M %p")
+
+
+def tell_date():
+    now = datetime.datetime.now()
+    return now.strftime("%A, %B %d, %Y")
+
+
+# ---------------------------
+# Actions / Intent Handlers
+# ---------------------------
+def search_wikipedia(query: str):
+    """Search Wikipedia and return a short summary (if available)."""
+    try:
+        speak("Searching Wikipedia...")
+        # remove the word 'wikipedia' if present
+        cleaned = query.replace("wikipedia", "").strip()
+        if not cleaned:
+            speak("What should I search on Wikipedia?")
+            cleaned = listen()
+        summary = wikipedia.summary(cleaned, sentences=WIKI_SENTENCES, auto_suggest=True, redirect=True)
+        speak("According to Wikipedia,")
+        speak(summary)
+    except Exception as e:
+        speak("Sorry, I couldn't find that on Wikipedia.")
+        print("WIKI ERROR:", e)
+
+
+def open_website(site: str):
+    """Open a website or search query in the default browser."""
+    if "." in site or site.startswith("http"):
+        url = site if site.startswith("http") else f"https://{site}"
+    else:
+        # treat it as a search term
+        url = f"https://www.google.com/search?q={site.replace(' ', '+')}"
+    speak(f"Opening {site}")
+    webbrowser.open(url)
+
+
+def play_on_youtube(query: str):
+    """Play a video on YouTube using pywhatkit (opens browser)."""
+    try:
+        speak(f"Playing {query} on YouTube")
+        pywhatkit.playonyt(query)
+    except Exception as e:
+        speak("Sorry, couldn't play that on YouTube.")
+        print("YouTube error:", e)
+
+
+def open_app(name: str):
+    """Open local application (uses APP_MAP)."""
+    name = name.lower().strip()
+    if name in APP_MAP:
+        cmd = APP_MAP[name]
+        speak(f"Opening {name}")
+        try:
+            if sys.platform == "win32":
+                os.startfile(cmd)
+            else:
+                subprocess.Popen([cmd])
+        except Exception as e:
+            speak(f"Failed to open {name}.")
+            print("Open app error:", e)
+    else:
+        speak(f"I don't have a mapping for {name}. You can update APP_MAP in the script.")
+
+
+def send_email_smtp(to_addr: str, subject: str, body: str):
+    """
+    Example send-email function. Disabled by default for safety.
+    To enable: fill your SMTP settings and credentials.
+    """
+    import smtplib
+    from email.message import EmailMessage
+
+    SMTP_SERVER = "smtp.gmail.com"
+    SMTP_PORT = 587
+    EMAIL = "your_email@gmail.com"
+    PASSWORD = "your_password"  # recommended: use environment variables or app password
+
+    msg = EmailMessage()
+    msg["From"] = EMAIL
+    msg["To"] = to_addr
+    msg["Subject"] = subject
+    msg.set_content(body)
+
+    try:
+        server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
+        server.starttls()
+        server.login(EMAIL, PASSWORD)
+        server.send_message(msg)
+        server.quit()
+        speak("Email sent successfully.")
+    except Exception as e:
+        speak("Failed to send email. Check credentials and settings.")
+        print("Email error:", e)
+
+
+# ---------------------------
+# Main command loop
+# ---------------------------
+def handle_command(command: str) -> bool:
+    """
+    Process a single command string.
+    Returns False to exit the loop (stop assistant).
+    """
+    if not command:
+        return True
+
+    # Exit
+    if any(phrase in command for phrase in ("exit", "quit", "stop", "bye")):
+        speak("Goodbye. Have a great day!")
+        return False
+
+    # Greeting
+    if "how are you" in command or "how are you doing" in command:
+        speak("I'm a program, so I'm always fine. How can I help you today?")
+
+    # Time / Date
+    elif "time" in command and "date" not in command:
+        speak(f"The current time is {tell_time()}")
+
+    elif "date" in command:
+        speak(f"Today's date is {tell_date()}")
+
+    # Wikipedia
+    elif "wikipedia" in command:
+        search_wikipedia(command)
+
+    # Open website
+    elif command.startswith("open "):
+        target = command.replace("open ", "").strip()
+        # if user says "open youtube", open youtube site
+        open_website(target)
+
+    # play on youtube
+    elif command.startswith("play "):
+        # play <something> on youtube
+        target = command.replace("play ", "").strip()
+        play_on_youtube(target)
+
+    # search google
+    elif command.startswith("search ") or command.startswith("google "):
+        term = command.replace("search ", "").replace("google ", "").strip()
+        open_website(term)
+
+    # open app
+    elif command.startswith("open app ") or command.startswith("launch "):
+        name = command.replace("open app ", "").replace("launch ", "").strip()
+        open_app(name)
+
+    # send email (example)
+    elif "send email" in command:
+        speak("Who is the recipient? Please type the email address.")
+        to_addr = input("Recipient email: ").strip()
+        speak("What is the subject?")
+        subject = input("Subject: ").strip()
+        speak("Tell me the message.")
+        body = input("Message: ").strip()
+        speak("Sending email — note: configure credentials in the script first.")
+        # send_email_smtp(to_addr, subject, body)
+        speak("Email function is currently commented out for safety. Edit send_email_smtp and enable it if you want to use it.")
+
+    # small talk
+    elif "your name" in command or "who are you" in command:
+        speak("I am Jarvis, your assistant. You can customize me using the Python script.")
+
+    # fallback to web search if nothing matched
+    else:
+        speak("I didn't understand exactly. Should I search the web for that?")
+        answer = listen()
+        if any(x in answer for x in ("yes", "y", "sure", "do it", "search")):
+            open_website(command)
+        else:
+            speak("Okay. Ask me something else.")
+
+    return True
+
+
+def wish_user():
+    hour = datetime.datetime.now().hour
+    if 5 <= hour < 12:
+        speak("Good morning!")
+    elif 12 <= hour < 17:
+        speak("Good afternoon!")
+    elif 17 <= hour < 22:
+        speak("Good evening!")
+    else:
+        speak("Hello!")
+
+    speak("I am Jarvis. How may I help you?")
+
+
+def main_loop():
+    speak("Starting Jarvis...")
+    wish_user()
+    running = True
+    while running:
+        command = listen()
+        running = handle_command(command)
+        # small pause to avoid tight loop
+        time.sleep(0.5)
+
+
+if __name__ == "__main__":
+    try:
+        main_loop()
+    except KeyboardInterrupt:
+        speak("Shutting down. Bye!")
+    except Exception as e:
+        print("Fatal error:", e)
+        speak("An error occurred; check the console for details.")
